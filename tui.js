@@ -412,12 +412,29 @@ sidebar.on('select', (item, index) => {
     return;
   }
 
-  if (text.includes('#')) {
-    const name = text.replace(/[►#]/g, '').trim();
+  // Remove leading selector arrow and trailing unread badge (number)
+  let cleanText = text.replace(/^►\s*/, '').replace(/\s*\(\d+\)\s*$/, '').trim();
+
+  // Channel: starts with "# " (the display symbol)
+  if (cleanText.startsWith('# ')) {
+    // Remove the display "# " prefix to get actual channel name
+    const name = cleanText.substring(2).trim();
+    debugLog(`Sidebar select channel: "${name}"`);
     const ch = state.channels.find(c => c.name === name);
-    if (ch) selectChat('channel', ch.idx, ch.name);
-  } else if (text.includes('@') || text.includes('⌂')) {
-    const name = text.replace(/[►@⌂]/g, '').trim();
+    if (ch) {
+      selectChat('channel', ch.idx, ch.name);
+    } else {
+      debugLog(`Channel not found: "${name}", channels: ${JSON.stringify(state.channels.map(c => c.name))}`);
+    }
+  } else if (cleanText.startsWith('@ ')) {
+    // Contact: starts with "@ "
+    const name = cleanText.substring(2).trim();
+    debugLog(`Sidebar select contact: "${name}"`);
+    selectChat('direct', null, name);
+  } else if (cleanText.startsWith('⌂ ')) {
+    // Room: starts with "⌂ "
+    const name = cleanText.substring(2).trim();
+    debugLog(`Sidebar select room: "${name}"`);
     selectChat('direct', null, name);
   }
 });
@@ -520,6 +537,8 @@ function updateChatHeader() {
 }
 
 function addMessage(msg) {
+  debugLog(`addMessage called: type=${msg.type}, sender=${msg.sender}, text="${msg.text?.substring(0, 30)}..."`);
+
   // Check for duplicate by ID first, then by content
   const isDuplicate = state.messages.some(m =>
     m.id === msg.id ||
@@ -532,6 +551,9 @@ function addMessage(msg) {
   if (!isDuplicate) {
     state.messages.push(msg);
     saveMessageCache();  // Persist to disk
+    debugLog(`Message added, total messages: ${state.messages.length}`);
+  } else {
+    debugLog(`Message rejected as duplicate`);
   }
   renderMessages();
 }
@@ -543,6 +565,8 @@ function renderMessages() {
     }
     return m.type === 'direct' && m.contactName === state.selectedChat.name;
   });
+
+  debugLog(`renderMessages: selectedChat=${state.selectedChat.type}:${state.selectedChat.name || state.selectedChat.idx}, total=${state.messages.length}, filtered=${filtered.length}`);
 
   if (filtered.length === 0) {
     messageList.setContent('{gray-fg}No messages yet{/}');
