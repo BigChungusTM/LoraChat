@@ -6,6 +6,77 @@ const SERVICE_UUID = '6e400001b5a3f393e0a9e50e24dcca9e';
 const RX_CHAR_UUID = '6e400002b5a3f393e0a9e50e24dcca9e'; // Write to this
 const TX_CHAR_UUID = '6e400003b5a3f393e0a9e50e24dcca9e'; // Read/notify from this
 
+// Static function to scan for MeshCore devices
+export async function scanForDevices(duration = 10000, onFound = null) {
+  return new Promise((resolve, reject) => {
+    const devices = [];
+    let scanTimeout;
+
+    const stateHandler = (state) => {
+      if (state === 'poweredOn') {
+        noble.startScanning([SERVICE_UUID], true);  // Allow duplicates for RSSI updates
+      } else if (state === 'poweredOff') {
+        cleanup();
+        reject(new Error('Bluetooth is powered off'));
+      }
+    };
+
+    const discoverHandler = (peripheral) => {
+      // Try multiple sources for device name
+      const name = peripheral.advertisement?.localName
+        || peripheral.advertisement?.serviceData?.[0]?.data?.toString()
+        || peripheral.name
+        || `Device ${peripheral.id.substring(0, 8)}`;
+      const rssi = peripheral.rssi;
+      const id = peripheral.id;
+
+      // Check if we already have this device
+      const existing = devices.find(d => d.id === id);
+      if (existing) {
+        existing.rssi = rssi;  // Update RSSI
+        // Update name if we got a better one
+        if (name && !name.startsWith('Device ') && existing.name.startsWith('Device ')) {
+          existing.name = name;
+        }
+        if (onFound) onFound(devices);
+      } else {
+        devices.push({ id, name, rssi, peripheral });
+        if (onFound) onFound(devices);
+      }
+    };
+
+    const cleanup = () => {
+      clearTimeout(scanTimeout);
+      noble.removeListener('stateChange', stateHandler);
+      noble.removeListener('discover', discoverHandler);
+      try {
+        noble.stopScanning();
+      } catch (e) {}
+    };
+
+    noble.on('stateChange', stateHandler);
+    noble.on('discover', discoverHandler);
+
+    // Start scan if already powered on
+    if (noble.state === 'poweredOn') {
+      noble.startScanning([SERVICE_UUID], true);
+    }
+
+    // Stop after duration
+    scanTimeout = setTimeout(() => {
+      cleanup();
+      resolve(devices);
+    }, duration);
+  });
+}
+
+// Stop any ongoing scan
+export function stopScan() {
+  try {
+    noble.stopScanning();
+  } catch (e) {}
+}
+
 class NodeJSBleConnection extends Connection {
   constructor(logFn = null) {
     super();
@@ -33,6 +104,14 @@ class NodeJSBleConnection extends Connection {
     } catch (e) {
       // Ignore - may not be scanning
     }
+  }
+
+  // Connect to a specific peripheral (from scan results)
+  async connectToDevice(peripheral) {
+    this._cleanupListeners();
+    this.peripheral = peripheral;
+    this.log(`Connecting to ${peripheral.advertisement?.localName || 'device'}...`);
+    await this.connectToPeripheral();
   }
 
   async connect(deviceName = null, timeout = 30000) {

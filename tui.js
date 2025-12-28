@@ -1,6 +1,6 @@
 import { NodeRuntime, setRuntime, Screen, Box, Text, Button, List, Log, Textbox } from '@unblessed/node';
 import { NodeJSSerialConnection, Constants, BufferUtils } from '@liamcottle/meshcore.js';
-import NodeJSBleConnection from './ble-connection.js';
+import NodeJSBleConnection, { scanForDevices, stopScan } from './ble-connection.js';
 import config from './config.js';
 import fs from 'fs';
 
@@ -39,6 +39,35 @@ process.exit = (code) => {
 // Helper to strip blessed-style tags from text
 function stripTags(str) {
   return str.replace(/\{[^}]+\}/g, '');
+}
+
+// Helper to get chat key for unread tracking
+function getChatKey(type, idOrName) {
+  return `${type}:${idOrName}`;
+}
+
+// Increment unread count for a chat
+function incrementUnread(type, idOrName) {
+  const key = getChatKey(type, idOrName);
+  state.unreadCounts[key] = (state.unreadCounts[key] || 0) + 1;
+  updateSidebar();
+}
+
+// Clear unread count for current chat
+function clearCurrentUnread() {
+  const key = getChatKey(
+    state.selectedChat.type,
+    state.selectedChat.type === 'channel' ? state.selectedChat.idx : state.selectedChat.name
+  );
+  if (state.unreadCounts[key]) {
+    delete state.unreadCounts[key];
+    updateSidebar();
+  }
+}
+
+// Get unread count for a chat
+function getUnreadCount(type, idOrName) {
+  return state.unreadCounts[getChatKey(type, idOrName)] || 0;
 }
 
 // MeshCore contact types
@@ -108,6 +137,7 @@ const state = {
   aiEnabled: false,
   selectedChat: { type: 'channel', idx: 0, name: 'Public' },
   focusedElement: 'sidebar',
+  unreadCounts: {},  // Track unread messages per chat: { 'channel:0': 2, 'direct:Name': 1 }
 };
 
 // ============================================
@@ -170,19 +200,40 @@ const statusLabel = new Text({
 const helpLabel = new Text({
   parent: headerBar,
   top: 1,
-  right: 35,
-  content: '{gray-fg}[1]Chats [2]AI [3]Send [Q]uit{/}',
+  right: 47,
+  content: '{gray-fg}[1]Chats [2]AI [3]Send [4]Scan [Q]uit{/}',
   tags: true,
   mouse: false,
   style: { bg: 'blue' },
+});
+
+// Scan Button
+const scanButton = new Button({
+  parent: headerBar,
+  top: 0,
+  right: 22,
+  width: 10,
+  height: 3,
+  content: ' Scan ',
+  align: 'center',
+  valign: 'middle',
+  tags: true,
+  mouse: true,
+  keys: false,
+  style: {
+    bg: 'magenta',
+    fg: 'white',
+    hover: { bg: 'cyan' },
+    focus: { bg: 'cyan' },
+  },
 });
 
 // AI Toggle Button (mouse only - keyboard shortcut is [2])
 const aiButton = new Button({
   parent: headerBar,
   top: 0,
-  right: 12,
-  width: 12,
+  right: 32,
+  width: 10,
   height: 3,
   content: ' AI: ON ',
   align: 'center',
@@ -281,7 +332,10 @@ function updateSidebar() {
   } else {
     for (const ch of validChannels) {
       const sel = (state.selectedChat.type === 'channel' && state.selectedChat.idx === ch.idx) ? '► ' : '  ';
-      items.push(`${sel}{green-fg}#{/} {white-fg}${ch.name}{/}`);
+      const unread = getUnreadCount('channel', ch.idx);
+      const unreadBadge = unread > 0 ? ` {red-fg}{bold}(${unread}){/}` : '';
+      const nameStyle = unread > 0 ? '{bold}{white-fg}' : '{white-fg}';
+      items.push(`${sel}{green-fg}#{/} ${nameStyle}${ch.name}{/}${unreadBadge}`);
     }
   }
 
@@ -298,7 +352,10 @@ function updateSidebar() {
   } else {
     for (const contact of clients) {
       const sel = (state.selectedChat.type === 'direct' && state.selectedChat.name === contact.name) ? '► ' : '  ';
-      items.push(`${sel}{yellow-fg}@{/} {white-fg}${contact.name}{/}`);
+      const unread = getUnreadCount('direct', contact.name);
+      const unreadBadge = unread > 0 ? ` {red-fg}{bold}(${unread}){/}` : '';
+      const nameStyle = unread > 0 ? '{bold}{white-fg}' : '{white-fg}';
+      items.push(`${sel}{yellow-fg}@{/} ${nameStyle}${contact.name}{/}${unreadBadge}`);
     }
   }
 
@@ -310,7 +367,10 @@ function updateSidebar() {
   } else {
     for (const room of rooms) {
       const sel = (state.selectedChat.type === 'direct' && state.selectedChat.name === room.name) ? '► ' : '  ';
-      items.push(`${sel}{magenta-fg}⌂{/} {white-fg}${room.name}{/}`);
+      const unread = getUnreadCount('direct', room.name);
+      const unreadBadge = unread > 0 ? ` {red-fg}{bold}(${unread}){/}` : '';
+      const nameStyle = unread > 0 ? '{bold}{white-fg}' : '{white-fg}';
+      items.push(`${sel}{magenta-fg}⌂{/} ${nameStyle}${room.name}{/}${unreadBadge}`);
     }
   }
 
@@ -328,6 +388,17 @@ function updateSidebar() {
   sidebar.setItems(items);
   screen.render();
 }
+
+// Enable scroll wheel on sidebar
+sidebar.on('wheeldown', () => {
+  sidebar.down(3);
+  screen.render();
+});
+
+sidebar.on('wheelup', () => {
+  sidebar.up(3);
+  screen.render();
+});
 
 sidebar.on('select', (item, index) => {
   const text = stripTags(item.content).trim();
@@ -383,6 +454,8 @@ sidebar.on('mouse', (data) => {
 
 function selectChat(type, idx, name) {
   state.selectedChat = { type, idx, name };
+  // Clear unread count for this chat
+  clearCurrentUnread();
   updateSidebar();
   updateChatHeader();
   renderMessages();
@@ -411,7 +484,7 @@ const chatHeader = new Text({
   mouse: false,
 });
 
-const messageList = new Log({
+const messageList = new Box({
   parent: chatArea,
   top: 1,
   left: 0,
@@ -422,7 +495,22 @@ const messageList = new Log({
   keys: true,
   scrollable: true,
   alwaysScroll: true,
-  scrollbar: { ch: '│', style: { fg: 'cyan' } },
+  scrollbar: {
+    ch: '█',
+    track: { bg: 'gray' },
+    style: { bg: 'cyan', fg: 'cyan' },
+  },
+});
+
+// Enable scroll wheel on message list
+messageList.on('wheeldown', () => {
+  messageList.scroll(3);
+  screen.render();
+});
+
+messageList.on('wheelup', () => {
+  messageList.scroll(-3);
+  screen.render();
 });
 
 function updateChatHeader() {
@@ -465,7 +553,7 @@ function renderMessages() {
   // Build all lines at once to avoid duplication from log() appending
   const lines = [];
   for (const msg of filtered) {
-    // Handle missing or invalid timestamps
+    // Handle missing or invalid timestamps - use white color for visibility
     let time = '--:--';
     if (msg.timestamp) {
       const date = new Date(msg.timestamp);
@@ -473,8 +561,21 @@ function renderMessages() {
         time = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
       }
     }
-    const sender = msg.outgoing ? '{green-fg}You{/}' : `{cyan-fg}${msg.sender}{/}`;
 
+    // Handle sender display
+    let sender;
+    if (msg.outgoing) {
+      sender = '{green-fg}You{/}';
+    } else if (msg.type === 'channel') {
+      // For channel messages, hide sender entirely (just show message)
+      sender = null;
+    } else if (msg.sender) {
+      sender = `{cyan-fg}${msg.sender}{/}`;
+    } else {
+      sender = null;
+    }
+
+    // Status icons for ALL outgoing messages (user and AI)
     let statusIcon = '';
     if (msg.outgoing) {
       switch (msg.status) {
@@ -482,17 +583,27 @@ function renderMessages() {
         case 'sent': statusIcon = ' {blue-fg}✓{/}'; break;
         case 'delivered': statusIcon = ' {green-fg}✓✓{/}'; break;
         case 'failed': statusIcon = ' {red-fg}✗{/}'; break;
+        default: statusIcon = ''; break;
       }
     }
 
     const aiTag = msg.isAI ? ' {magenta-fg}[AI]{/}' : '';
-    lines.push(`{gray-fg}[${time}]{/} ${sender}${aiTag}: ${msg.text}${statusIcon}`);
+
+    // Format line based on whether we have a sender
+    if (sender) {
+      lines.push(`{white-fg}[${time}]{/} ${sender}${aiTag}: ${msg.text}${statusIcon}`);
+    } else {
+      lines.push(`{white-fg}[${time}]{/}${aiTag} ${msg.text}${statusIcon}`);
+    }
   }
 
   // Set all content at once (replaces instead of appending)
   messageList.setContent(lines.join('\n'));
-  messageList.setScrollPerc(100);  // Scroll to bottom
-  screen.render();
+  // Scroll to bottom after content update
+  process.nextTick(() => {
+    messageList.setScrollPerc(100);
+    screen.render();
+  });
 }
 
 function updateMessageStatus(msgId, status) {
@@ -524,12 +635,46 @@ const statusText = new Text({
   parent: inputArea,
   top: 0,
   left: 1,
-  right: 1,
+  right: 15,
   height: 1,
   tags: true,
   content: '{gray-fg}Ready{/}',
   style: { fg: 'gray' },
 });
+
+// Byte counter for message length
+const MAX_MESSAGE_BYTES = 200;  // MeshCore message limit
+
+const byteCounter = new Text({
+  parent: inputArea,
+  top: 0,
+  right: 1,
+  width: 12,
+  height: 1,
+  tags: true,
+  align: 'right',
+  content: `{gray-fg}0/${MAX_MESSAGE_BYTES}{/}`,
+  style: { fg: 'gray' },
+});
+
+// Helper to get byte length of string (UTF-8)
+function getByteLength(str) {
+  return Buffer.byteLength(str, 'utf8');
+}
+
+// Update byte counter display
+function updateByteCounter(text) {
+  const bytes = getByteLength(text || '');
+  let color = 'gray';
+  if (bytes > MAX_MESSAGE_BYTES) {
+    color = 'red';
+  } else if (bytes > MAX_MESSAGE_BYTES * 0.8) {
+    color = 'yellow';
+  } else if (bytes > 0) {
+    color = 'green';
+  }
+  byteCounter.setContent(`{${color}-fg}${bytes}/${MAX_MESSAGE_BYTES}{/}`);
+}
 
 // Container box with border for the text input
 const inputBoxContainer = new Box({
@@ -589,13 +734,20 @@ inputBox.on('keypress', (ch, key) => {
     const text = inputBox.getValue();
     debugLog(`Enter pressed, value="${text}"`);
     if (text && text.trim()) {
+      const bytes = getByteLength(text.trim());
+      if (bytes > MAX_MESSAGE_BYTES) {
+        setStatus(`{red-fg}Message too long (${bytes}/${MAX_MESSAGE_BYTES} bytes){/}`);
+        return;
+      }
       sendMessage(text.trim());
     }
     inputBox.clearValue();
+    updateByteCounter('');
     screen.render();
   } else if (key.name === 'escape') {
     // Escape to cancel and go back to sidebar
     inputBox.clearValue();
+    updateByteCounter('');
     sidebar.focus();
     screen.render();
   } else if (key.name === 'backspace') {
@@ -603,12 +755,14 @@ inputBox.on('keypress', (ch, key) => {
     const val = inputBox.getValue();
     if (val.length > 0) {
       inputBox.setValue(val.slice(0, -1));
+      updateByteCounter(inputBox.getValue());
       screen.render();
     }
   } else if (ch && !key.ctrl && !key.meta) {
     // Regular character - append to value
     const val = inputBox.getValue() || '';
     inputBox.setValue(val + ch);
+    updateByteCounter(inputBox.getValue());
     screen.render();
   }
 });
@@ -694,9 +848,300 @@ quitButton.on('press', () => {
 sendButton.on('press', () => {
   const text = inputBox.getValue();
   if (text && text.trim()) {
+    const bytes = getByteLength(text.trim());
+    if (bytes > MAX_MESSAGE_BYTES) {
+      setStatus(`{red-fg}Message too long (${bytes}/${MAX_MESSAGE_BYTES} bytes){/}`);
+      return;
+    }
     sendMessage(text.trim());
     inputBox.clearValue();
+    updateByteCounter('');
   }
+});
+
+// ============================================
+// Device Scanner Modal
+// ============================================
+let scannerOverlay = null;
+let scannerModal = null;
+let deviceList = null;
+let scannerStatus = null;
+let scannedDevices = [];
+let isScanning = false;
+
+function createScannerModal() {
+  // Dark overlay behind modal (click to close)
+  scannerOverlay = new Box({
+    parent: screen,
+    top: 0,
+    left: 0,
+    width: '100%',
+    height: '100%',
+    style: { bg: 'black', transparent: true },
+  });
+
+  scannerOverlay.on('click', () => {
+    closeScannerModal();
+  });
+
+  // Modal window
+  scannerModal = new Box({
+    parent: screen,
+    top: 'center',
+    left: 'center',
+    width: '60%',
+    height: '70%',
+    border: { type: 'line' },
+    label: ' {bold}Scan for MeshCore Devices [4]{/} ',
+    tags: true,
+    style: {
+      border: { fg: 'magenta' },
+      bg: 'black',
+    },
+    shadow: true,
+  });
+
+  // Status text
+  scannerStatus = new Text({
+    parent: scannerModal,
+    top: 0,
+    left: 1,
+    right: 1,
+    height: 1,
+    tags: true,
+    content: '{yellow-fg}Starting scan...{/}',
+  });
+
+  // Device list
+  deviceList = new List({
+    parent: scannerModal,
+    top: 2,
+    left: 0,
+    right: 0,
+    bottom: 3,
+    tags: true,
+    keys: true,
+    mouse: true,
+    style: {
+      selected: { bg: 'blue', fg: 'white', bold: true },
+      item: { fg: 'white' },
+    },
+    scrollbar: { ch: '█', style: { bg: 'cyan' } },
+  });
+
+  // Instructions
+  const instructions = new Text({
+    parent: scannerModal,
+    bottom: 0,
+    left: 1,
+    right: 1,
+    height: 2,
+    tags: true,
+    content: '{white-fg}[Enter]{/} {gray-fg}Connect{/}  {white-fg}[S]{/} {gray-fg}Rescan{/}  {white-fg}[Esc]{/} {gray-fg}Close{/}',
+  });
+
+  // Key handlers for modal
+  scannerModal.key(['escape', 'q'], () => {
+    closeScannerModal();
+  });
+
+  // Also handle escape on the device list
+  deviceList.key(['escape', 'q'], () => {
+    closeScannerModal();
+  });
+
+  scannerModal.key(['s', 'S'], () => {
+    if (isScanning) {
+      stopDeviceScan();
+    } else {
+      startDeviceScan();
+    }
+  });
+
+  scannerModal.key(['enter'], () => {
+    const selected = deviceList.selected;
+    if (scannedDevices[selected]) {
+      connectToScannedDevice(scannedDevices[selected]);
+    }
+  });
+
+  // Scroll wheel for device list
+  deviceList.on('wheeldown', () => {
+    deviceList.down(1);
+    screen.render();
+  });
+
+  deviceList.on('wheelup', () => {
+    deviceList.up(1);
+    screen.render();
+  });
+
+  // Double-click to connect
+  deviceList.on('select', (item, index) => {
+    if (scannedDevices[index]) {
+      connectToScannedDevice(scannedDevices[index]);
+    }
+  });
+}
+
+function showScannerModal() {
+  if (!scannerModal) {
+    createScannerModal();
+  }
+  scannedDevices = [];
+  updateDeviceList();
+  scannerOverlay.show();
+  scannerModal.show();
+  deviceList.focus();
+  screen.render();
+
+  // Auto-start scanning when opened (if not already connected)
+  if (!state.connected) {
+    setTimeout(() => startDeviceScan(), 100);
+  } else {
+    scannerStatus.setContent('{green-fg}Already connected. Press [S] to scan for other devices.{/}');
+    screen.render();
+  }
+}
+
+function closeScannerModal() {
+  if (isScanning) {
+    stopDeviceScan();
+  }
+  if (scannerOverlay) {
+    scannerOverlay.hide();
+  }
+  if (scannerModal) {
+    scannerModal.hide();
+  }
+  sidebar.focus();
+  screen.render();
+}
+
+function startDeviceScan() {
+  if (isScanning) return;
+  isScanning = true;
+  scannedDevices = [];
+  updateDeviceList();
+  scannerStatus.setContent('{yellow-fg}Scanning for devices...{/}');
+  screen.render();
+
+  scanForDevices(15000, (devices) => {
+    // Callback called whenever devices are found/updated
+    scannedDevices = devices;
+    updateDeviceList();
+  }).then((devices) => {
+    isScanning = false;
+    scannedDevices = devices;
+    updateDeviceList();
+    if (devices.length === 0) {
+      scannerStatus.setContent('{red-fg}No devices found. Press [S] to scan again.{/}');
+    } else {
+      scannerStatus.setContent(`{green-fg}Found ${devices.length} device(s). Select and press Enter to connect.{/}`);
+    }
+    screen.render();
+  }).catch((err) => {
+    isScanning = false;
+    scannerStatus.setContent(`{red-fg}Scan error: ${err.message}{/}`);
+    screen.render();
+  });
+}
+
+function stopDeviceScan() {
+  isScanning = false;
+  stopScan();
+  scannerStatus.setContent(`{gray-fg}Scan stopped. Found ${scannedDevices.length} device(s).{/}`);
+  screen.render();
+}
+
+function updateDeviceList() {
+  if (!deviceList) return;
+
+  if (scannedDevices.length === 0) {
+    deviceList.setItems(['  No devices found yet...']);
+  } else {
+    const items = scannedDevices.map((d, i) => {
+      const rssiBar = getRssiBar(d.rssi);
+      // Use plain text - the list widget handles selection highlighting
+      return `  ${d.name} (${d.rssi} dBm) ${rssiBar}`;
+    });
+    deviceList.setItems(items);
+  }
+  screen.render();
+}
+
+function getRssiBar(rssi) {
+  // RSSI typically ranges from -30 (excellent) to -100 (poor)
+  const normalized = Math.max(0, Math.min(100, (rssi + 100) * 1.4));
+  const bars = Math.round(normalized / 20);
+  // Return plain characters - colored tags don't work well in list items
+  return '█'.repeat(bars) + '░'.repeat(5 - bars);
+}
+
+async function connectToScannedDevice(device) {
+  closeScannerModal();
+  debugLog(`Attempting to connect to: ${device.name} (${device.id})`);
+  setStatus(`{yellow-fg}Connecting to ${device.name}...{/}`);
+  updateStatus(`{yellow-fg}Connecting to ${device.name}...{/}`);
+
+  try {
+    // Close existing connection if any
+    if (state.connection) {
+      debugLog('Closing existing connection...');
+      try {
+        await state.connection.close();
+      } catch (e) {
+        debugLog(`Close error (ignored): ${e.message}`);
+      }
+      state.connection = null;
+      state.connected = false;
+    }
+
+    // Create new connection and connect to the selected device
+    debugLog('Creating new BLE connection...');
+    state.connection = new NodeJSBleConnection(logTUI);
+
+    debugLog('Calling connectToDevice...');
+    await state.connection.connectToDevice(device.peripheral);
+    debugLog('connectToDevice completed successfully');
+
+    // Set up event handlers
+    debugLog('Setting up event handlers...');
+    state.connection.on('connected', () => {
+      debugLog('Connected event fired');
+      onConnected();
+    });
+    state.connection.on('disconnected', () => {
+      debugLog('Disconnected event fired');
+      onDisconnected();
+    });
+    state.connection.on(Constants.PushCodes.MsgWaiting, () => {
+      debugLog('MsgWaiting push notification received');
+      setStatus('{yellow-fg}New messages available, syncing...{/}');
+      processMessages();
+    });
+    state.connection.on(Constants.PushCodes.SendConfirmed, onSendConfirmed);
+
+    setStatus(`{green-fg}Connected to ${device.name}!{/}`);
+    debugLog('Connection setup complete');
+
+  } catch (err) {
+    debugLog(`Connection error: ${err.message}\n${err.stack}`);
+    setStatus(`{red-fg}Failed to connect: ${err.message}{/}`);
+    updateStatus('{red-fg}Connection failed{/}');
+    state.connection = null;
+    state.connected = false;
+  }
+}
+
+// Scan button and keyboard shortcut handlers
+scanButton.on('press', () => {
+  debugLog('Scan button pressed');
+  showScannerModal();
+});
+
+screen.key(['4'], () => {
+  showScannerModal();
 });
 
 // ============================================
@@ -1025,6 +1470,11 @@ async function handleContactMessage(msg) {
 
   setStatus(`{cyan-fg}New DM from ${senderName}{/}`);
 
+  // Increment unread if not viewing this contact
+  if (!(state.selectedChat.type === 'direct' && state.selectedChat.name === senderName)) {
+    incrementUnread('direct', senderName);
+  }
+
   if (state.aiEnabled && config.respondToDirectMessages !== false) {
     const response = await queryOllama(msg.text);
     if (response && contact) {
@@ -1056,29 +1506,41 @@ async function handleChannelMessage(msg) {
   const channel = state.channels.find(ch => ch.idx === msg.channelIdx);
   const channelName = channel?.name || (msg.channelIdx === 0 ? 'Public' : `Channel ${msg.channelIdx}`);
 
-  // Try to get sender name from senderName field or pubKeyPrefix
-  let senderName = msg.senderName || 'Unknown';
-  if (msg.pubKeyPrefix && senderName === 'Unknown') {
-    // Try to find contact by public key prefix
+  // Try to get sender name from various possible fields
+  let senderName = msg.senderName || msg.advName || msg.fromName || msg.name || null;
+
+  // Try to find contact by public key prefix if no name found
+  if (!senderName && msg.pubKeyPrefix) {
     const contact = state.contacts.find(c =>
       BufferUtils.bytesToHex(c.publicKey.subarray(0, 6)) === BufferUtils.bytesToHex(msg.pubKeyPrefix)
     );
     if (contact) {
       senderName = contact.name;
+    } else {
+      // Show short hex ID if no contact found
+      senderName = BufferUtils.bytesToHex(msg.pubKeyPrefix).substring(0, 8);
     }
   }
+
+  // Final fallback - leave null to indicate unknown sender
+  debugLog(`Channel message sender: ${senderName}, msg fields: ${JSON.stringify(Object.keys(msg))}`);
 
   addMessage({
     id: Date.now().toString(),
     type: 'channel',
     channelIdx: msg.channelIdx,
     text: msg.text,
-    sender: senderName,
+    sender: senderName,  // Can be null
     outgoing: false,
     timestamp: msg.timestamp || Date.now(),
   });
 
-  setStatus(`{cyan-fg}New message in ${channelName} from ${senderName}{/}`);
+  setStatus(`{cyan-fg}New message in ${channelName}${senderName ? ` from ${senderName}` : ''}{/}`);
+
+  // Increment unread if not viewing this channel
+  if (!(state.selectedChat.type === 'channel' && state.selectedChat.idx === msg.channelIdx)) {
+    incrementUnread('channel', msg.channelIdx);
+  }
 
   if (state.aiEnabled && config.respondToChannelMessages !== false) {
     const botName = config.botName || state.selfInfo?.name || '';
