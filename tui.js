@@ -3,6 +3,11 @@ import { NodeJSSerialConnection, Constants, BufferUtils } from '@liamcottle/mesh
 import NodeJSBleConnection, { scanForDevices, stopScan } from './ble-connection.js';
 import config from './config.js';
 import fs from 'fs';
+import path from 'path';
+
+// Get portable app directory (next to exe when packaged, or cwd when running from source)
+const APP_DIR = process.pkg ? path.dirname(process.execPath) : process.cwd();
+const DEBUG_LOG = path.join(APP_DIR, 'debug.log');
 
 // Initialize unblessed runtime
 setRuntime(new NodeRuntime());
@@ -14,10 +19,10 @@ console.error = (...args) => logs.push(['error', ...args]);
 
 // Debug file logger
 const debugLog = (msg) => {
-  fs.appendFileSync('C:/lorachat/debug.log', `${new Date().toISOString()} - ${msg}\n`);
+  fs.appendFileSync(DEBUG_LOG, `${new Date().toISOString()} - ${msg}\n`);
 };
 // Clear log on start
-fs.writeFileSync('C:/lorachat/debug.log', '--- TUI Started ---\n');
+fs.writeFileSync(DEBUG_LOG, '--- TUI Started ---\n');
 
 // Catch any uncaught exceptions
 process.on('uncaughtException', (err) => {
@@ -79,7 +84,7 @@ const AdvType = {
 };
 
 // Message cache file path
-const CACHE_FILE = 'C:/lorachat/message-cache.json';
+const CACHE_FILE = path.join(APP_DIR, 'message-cache.json');
 
 // Load cached messages from file
 function loadMessageCache() {
