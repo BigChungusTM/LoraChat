@@ -57,8 +57,22 @@ function loadMessageCache() {
   try {
     if (fs.existsSync(CACHE_FILE)) {
       const data = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
-      debugLog(`Loaded ${data.messages?.length || 0} cached messages`);
-      return data.messages || [];
+      const messages = data.messages || [];
+
+      // Deduplicate cached messages
+      const seen = new Set();
+      const unique = messages.filter(m => {
+        // Create a unique key based on content (not timestamp to catch old dupes)
+        const key = `${m.type}|${m.sender}|${m.text}|${m.channelIdx || ''}|${m.contactName || ''}`;
+        if (seen.has(key)) {
+          return false;
+        }
+        seen.add(key);
+        return true;
+      });
+
+      debugLog(`Loaded ${unique.length} cached messages (${messages.length - unique.length} duplicates removed)`);
+      return unique;
     }
   } catch (err) {
     debugLog(`Failed to load cache: ${err.message}`);
@@ -91,7 +105,7 @@ const state = {
   channels: [],  // Will be populated from device
   messages: loadMessageCache(),  // Load cached messages on startup
   pendingMessages: new Map(),
-  aiEnabled: true,
+  aiEnabled: false,
   selectedChat: { type: 'channel', idx: 0, name: 'Public' },
   focusedElement: 'sidebar',
 };
@@ -384,7 +398,7 @@ const chatArea = new Box({
   top: 3,
   left: '25%',
   width: '75%',
-  height: '100%-7',
+  height: '100%-9',  // Leave room for input area (height 6)
   border: { type: 'line' },
   style: { border: { fg: 'cyan' } },
 });
@@ -418,11 +432,13 @@ function updateChatHeader() {
 }
 
 function addMessage(msg) {
-  // Check for duplicate (same sender, text, and within 1 second)
+  // Check for duplicate by ID first, then by content
   const isDuplicate = state.messages.some(m =>
-    m.sender === msg.sender &&
-    m.text === msg.text &&
-    Math.abs(m.timestamp - msg.timestamp) < 1000
+    m.id === msg.id ||
+    (m.sender === msg.sender &&
+     m.text === msg.text &&
+     m.type === msg.type &&
+     (m.type === 'channel' ? m.channelIdx === msg.channelIdx : m.contactName === msg.contactName))
   );
 
   if (!isDuplicate) {
@@ -433,8 +449,6 @@ function addMessage(msg) {
 }
 
 function renderMessages() {
-  messageList.setContent('');
-
   const filtered = state.messages.filter(m => {
     if (state.selectedChat.type === 'channel') {
       return m.type === 'channel' && m.channelIdx === state.selectedChat.idx;
@@ -443,12 +457,22 @@ function renderMessages() {
   });
 
   if (filtered.length === 0) {
-    messageList.log('{gray-fg}No messages yet{/}');
+    messageList.setContent('{gray-fg}No messages yet{/}');
+    screen.render();
     return;
   }
 
+  // Build all lines at once to avoid duplication from log() appending
+  const lines = [];
   for (const msg of filtered) {
-    const time = new Date(msg.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    // Handle missing or invalid timestamps
+    let time = '--:--';
+    if (msg.timestamp) {
+      const date = new Date(msg.timestamp);
+      if (!isNaN(date.getTime())) {
+        time = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+      }
+    }
     const sender = msg.outgoing ? '{green-fg}You{/}' : `{cyan-fg}${msg.sender}{/}`;
 
     let statusIcon = '';
@@ -462,9 +486,12 @@ function renderMessages() {
     }
 
     const aiTag = msg.isAI ? ' {magenta-fg}[AI]{/}' : '';
-    messageList.log(`{gray-fg}${time}{/} ${sender}${aiTag}: ${msg.text}${statusIcon}`);
+    lines.push(`{gray-fg}[${time}]{/} ${sender}${aiTag}: ${msg.text}${statusIcon}`);
   }
 
+  // Set all content at once (replaces instead of appending)
+  messageList.setContent(lines.join('\n'));
+  messageList.setScrollPerc(100);  // Scroll to bottom
   screen.render();
 }
 
@@ -485,25 +512,52 @@ const inputArea = new Box({
   bottom: 0,
   left: '25%',
   width: '75%',
-  height: 4,
+  height: 6,
   border: { type: 'line' },
   label: ' {bold}Message [3]{/} ',
   tags: true,
   style: { border: { fg: 'green' } },
 });
 
-const inputBox = new Textbox({
+// Status text inside input area (top line)
+const statusText = new Text({
   parent: inputArea,
   top: 0,
+  left: 1,
+  right: 1,
+  height: 1,
+  tags: true,
+  content: '{gray-fg}Ready{/}',
+  style: { fg: 'gray' },
+});
+
+// Container box with border for the text input
+const inputBoxContainer = new Box({
+  parent: inputArea,
+  top: 1,
   left: 0,
-  right: 10,
+  right: 12,
+  height: 3,
+  border: { type: 'line' },
+  style: {
+    border: { fg: 'white' },
+    focus: { border: { fg: 'yellow' } },
+  },
+});
+
+const inputBox = new Textbox({
+  parent: inputBoxContainer,
+  top: 0,
+  left: 0,
+  right: 0,
   height: 1,
   keys: false,  // We handle keys manually
   mouse: true,
   inputOnFocus: false,
   style: {
     fg: 'white',
-    focus: { fg: 'yellow' },
+    bg: 'black',
+    focus: { fg: 'yellow', bg: 'black' },
   },
 });
 
@@ -513,9 +567,14 @@ function focusInputBox() {
   screen.render();
 }
 
-// Click on inputBox to focus
+// Click on inputBox or its container to focus
 inputBox.on('click', () => {
   debugLog('inputBox CLICKED');
+  focusInputBox();
+});
+
+inputBoxContainer.on('click', () => {
+  debugLog('inputBoxContainer CLICKED');
   focusInputBox();
 });
 
@@ -556,11 +615,13 @@ inputBox.on('keypress', (ch, key) => {
 
 const sendButton = new Button({
   parent: inputArea,
-  top: 0,
-  right: 1,
-  width: 8,
-  height: 1,
+  top: 1,
+  right: 0,
+  width: 10,
+  height: 3,
   content: ' Send ',
+  align: 'center',
+  valign: 'middle',
   mouse: true,
   keys: false,  // Mouse only - Enter in textbox triggers submit
   style: {
@@ -575,23 +636,8 @@ function focusInput() {
   focusInputBox();
 }
 
-// ============================================
-// Status Bar
-// ============================================
-const statusBar = new Text({
-  parent: screen,
-  bottom: 4,
-  left: '25%',
-  width: '75%-2',
-  height: 1,
-  tags: true,
-  mouse: false,
-  content: '',
-  style: { fg: 'gray' },
-});
-
 function setStatus(msg) {
-  statusBar.setContent(` ${msg}`);
+  statusText.setContent(msg);
   screen.render();
 }
 
@@ -656,6 +702,53 @@ sendButton.on('press', () => {
 // ============================================
 // Message Sending
 // ============================================
+const MAX_RETRIES = 2;  // Retry 2 more times after initial attempt (3 total)
+
+async function sendWithRetry(publicKey, text, msgId, attempt) {
+  try {
+    const result = await state.connection.sendTextMessage(publicKey, text);
+
+    state.pendingMessages.set(result.expectedAckCrc, {
+      msgId,
+      attempt,
+      publicKey,
+      text,
+      timeout: setTimeout(() => {
+        if (state.pendingMessages.has(result.expectedAckCrc)) {
+          const pending = state.pendingMessages.get(result.expectedAckCrc);
+          state.pendingMessages.delete(result.expectedAckCrc);
+
+          if (pending.attempt < MAX_RETRIES) {
+            // Retry sending
+            const nextAttempt = pending.attempt + 1;
+            setStatus(`{yellow-fg}No ack, retrying (${nextAttempt}/${MAX_RETRIES})...{/}`);
+            sendWithRetry(pending.publicKey, pending.text, pending.msgId, nextAttempt);
+          } else {
+            // Max retries reached, mark as failed
+            updateMessageStatus(msgId, 'failed');
+            setStatus('{red-fg}Message failed after 3 attempts{/}');
+          }
+        }
+      }, result.estTimeout + 3000),
+    });
+
+    updateMessageStatus(msgId, 'sent');
+    if (attempt === 0) {
+      setStatus('{blue-fg}Sent, awaiting confirmation...{/}');
+    } else {
+      setStatus(`{blue-fg}Retry ${attempt}/${MAX_RETRIES} sent, awaiting confirmation...{/}`);
+    }
+  } catch (err) {
+    if (attempt < MAX_RETRIES) {
+      setStatus(`{yellow-fg}Send error, retrying (${attempt + 1}/${MAX_RETRIES})...{/}`);
+      await sendWithRetry(publicKey, text, msgId, attempt + 1);
+    } else {
+      updateMessageStatus(msgId, 'failed');
+      setStatus(`{red-fg}Failed after 3 attempts: ${err.message}{/}`);
+    }
+  }
+}
+
 async function sendMessage(text) {
   if (!state.connected) {
     setStatus('{red-fg}Not connected!{/}');
@@ -686,19 +779,8 @@ async function sendMessage(text) {
     } else {
       const contact = state.contacts.find(c => c.name === state.selectedChat.name);
       if (contact) {
-        const result = await state.connection.sendTextMessage(contact.publicKey, text);
-
-        state.pendingMessages.set(result.expectedAckCrc, {
-          msgId,
-          timeout: setTimeout(() => {
-            if (state.pendingMessages.has(result.expectedAckCrc)) {
-              state.pendingMessages.delete(result.expectedAckCrc);
-            }
-          }, result.estTimeout + 5000),
-        });
-
-        updateMessageStatus(msgId, 'sent');
-        setStatus('{blue-fg}Sent, awaiting confirmation...{/}');
+        // Send with retry logic
+        await sendWithRetry(contact.publicKey, text, msgId, 0);
       } else {
         updateMessageStatus(msgId, 'failed');
         setStatus('{red-fg}Contact not found{/}');
