@@ -134,7 +134,6 @@ const state = {
   channels: [],  // Will be populated from device
   messages: loadMessageCache(),  // Load cached messages on startup
   pendingMessages: new Map(),
-  aiEnabled: false,
   selectedChat: { type: 'channel', idx: 0, name: 'Public' },
   focusedElement: 'sidebar',
   unreadCounts: {},  // Track unread messages per chat: { 'channel:0': 2, 'direct:Name': 1 }
@@ -200,8 +199,8 @@ const statusLabel = new Text({
 const helpLabel = new Text({
   parent: headerBar,
   top: 1,
-  right: 47,
-  content: '{gray-fg}[1]Chats [2]AI [3]Send [4]Scan [Q]uit{/}',
+  right: 35,
+  content: '{gray-fg}[1]Chats [2]Send [3]Scan [Q]uit{/}',
   tags: true,
   mouse: false,
   style: { bg: 'blue' },
@@ -211,7 +210,7 @@ const helpLabel = new Text({
 const scanButton = new Button({
   parent: headerBar,
   top: 0,
-  right: 22,
+  right: 12,
   width: 10,
   height: 3,
   content: ' Scan ',
@@ -222,27 +221,6 @@ const scanButton = new Button({
   keys: false,
   style: {
     bg: 'magenta',
-    fg: 'white',
-    hover: { bg: 'cyan' },
-    focus: { bg: 'cyan' },
-  },
-});
-
-// AI Toggle Button (mouse only - keyboard shortcut is [2])
-const aiButton = new Button({
-  parent: headerBar,
-  top: 0,
-  right: 32,
-  width: 10,
-  height: 3,
-  content: ' AI: ON ',
-  align: 'center',
-  valign: 'middle',
-  tags: true,
-  mouse: true,
-  keys: false,
-  style: {
-    bg: 'green',
     fg: 'white',
     hover: { bg: 'cyan' },
     focus: { bg: 'cyan' },
@@ -269,23 +247,6 @@ const quitButton = new Button({
     focus: { bg: 'magenta' },
   },
 });
-
-function updateAIButton() {
-  if (state.aiEnabled) {
-    aiButton.setContent('{center} AI: ON {/center}');
-    aiButton.style.bg = 'green';
-  } else {
-    aiButton.setContent('{center} AI: OFF {/center}');
-    aiButton.style.bg = 'red';
-  }
-  screen.render();
-}
-
-function toggleAI() {
-  state.aiEnabled = !state.aiEnabled;
-  updateAIButton();
-  setStatus(state.aiEnabled ? 'AI auto-reply enabled' : 'AI auto-reply disabled');
-}
 
 function updateStatus(text) {
   const connStatus = state.connected ? '{green-fg}●{/}' : '{red-fg}●{/}';
@@ -599,7 +560,7 @@ function renderMessages() {
       sender = null;
     }
 
-    // Status icons for ALL outgoing messages (user and AI)
+    // Status icons for outgoing messages
     let statusIcon = '';
     if (msg.outgoing) {
       switch (msg.status) {
@@ -611,13 +572,11 @@ function renderMessages() {
       }
     }
 
-    const aiTag = msg.isAI ? ' {magenta-fg}[AI]{/}' : '';
-
     // Format line based on whether we have a sender
     if (sender) {
-      lines.push(`{white-fg}[${time}]{/} ${sender}${aiTag}: ${msg.text}${statusIcon}`);
+      lines.push(`{white-fg}[${time}]{/} ${sender}: ${msg.text}${statusIcon}`);
     } else {
-      lines.push(`{white-fg}[${time}]{/}${aiTag} ${msg.text}${statusIcon}`);
+      lines.push(`{white-fg}[${time}]{/} ${msg.text}${statusIcon}`);
     }
   }
 
@@ -828,8 +787,8 @@ function logTUI(msg) {
 // Keyboard Shortcuts (since mouse can be unreliable)
 // ============================================
 screen.key(['1'], () => { sidebar.focus(); screen.render(); });
-screen.key(['2'], () => toggleAI());
-screen.key(['3'], () => focusInput());
+screen.key(['2'], () => focusInput());
+screen.key(['3'], () => showDeviceScanner());
 screen.key(['C-c'], () => {
   debugLog('EXITING via Ctrl+C');
   process.exit(0);
@@ -861,10 +820,6 @@ screen.key(['q', 'Q'], () => {
 });
 
 // Button press events (use 'press' not 'click' for buttons)
-aiButton.on('press', () => {
-  debugLog('AI button pressed');
-  toggleAI();
-});
 quitButton.on('press', () => {
   debugLog('EXITING via quit button press');
   process.exit(0);
@@ -1405,7 +1360,7 @@ async function onConnected() {
     updateSidebar();
     updateChatHeader();
     renderMessages();
-    setStatus('{green-fg}Ready! Press [3] to type, [1] for chats, [2] toggle AI{/}');
+    setStatus('{green-fg}Ready! Press [2] to type, [1] for chats, [3] to scan{/}');
 
     // Poll for new messages
     const pollInterval = config.pollInterval || 2000;
@@ -1499,30 +1454,6 @@ async function handleContactMessage(msg) {
     incrementUnread('direct', senderName);
   }
 
-  if (state.aiEnabled && config.respondToDirectMessages !== false) {
-    const response = await queryOllama(msg.text);
-    if (response && contact) {
-      const aiMsgId = Date.now().toString();
-      addMessage({
-        id: aiMsgId,
-        type: 'direct',
-        contactName: senderName,
-        text: response,
-        sender: state.selfInfo?.name || 'Bot',
-        outgoing: true,
-        isAI: true,
-        status: 'sending',
-        timestamp: Date.now(),
-      });
-
-      try {
-        await state.connection.sendTextMessage(contact.publicKey, response);
-        updateMessageStatus(aiMsgId, 'sent');
-      } catch {
-        updateMessageStatus(aiMsgId, 'failed');
-      }
-    }
-  }
 }
 
 async function handleChannelMessage(msg) {
@@ -1566,69 +1497,11 @@ async function handleChannelMessage(msg) {
     incrementUnread('channel', msg.channelIdx);
   }
 
-  if (state.aiEnabled && config.respondToChannelMessages !== false) {
-    const botName = config.botName || state.selfInfo?.name || '';
-    if (botName && msg.text.toLowerCase().includes(botName.toLowerCase())) {
-      const query = msg.text.replace(new RegExp(botName, 'gi'), '').trim();
-      const response = await queryOllama(query || 'hello');
-      if (response) {
-        const aiMsgId = Date.now().toString();
-        addMessage({
-          id: aiMsgId,
-          type: 'channel',
-          channelIdx: msg.channelIdx,
-          text: response,
-          sender: state.selfInfo?.name || 'Bot',
-          outgoing: true,
-          isAI: true,
-          status: 'sending',
-          timestamp: Date.now(),
-        });
-
-        try {
-          await state.connection.sendChannelTextMessage(msg.channelIdx, response);
-          updateMessageStatus(aiMsgId, 'sent');
-        } catch {
-          updateMessageStatus(aiMsgId, 'failed');
-        }
-      }
-    }
-  }
-}
-
-async function queryOllama(prompt) {
-  try {
-    const response = await fetch(`${config.ollama.host}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: config.ollama.model,
-        prompt,
-        system: config.ollama.systemPrompt,
-        stream: false,
-        options: { num_predict: config.ollama.maxResponseLength },
-      }),
-    });
-
-    if (!response.ok) return null;
-
-    const data = await response.json();
-    let reply = data.response?.trim() || '';
-
-    if (reply.length > config.ollama.maxResponseLength) {
-      reply = reply.substring(0, config.ollama.maxResponseLength - 3) + '...';
-    }
-
-    return reply;
-  } catch {
-    return null;
-  }
 }
 
 // ============================================
 // Start
 // ============================================
-updateAIButton();
 updateStatus('Starting...');
 updateSidebar();
 updateChatHeader();
