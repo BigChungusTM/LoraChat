@@ -3,16 +3,9 @@
   "version": "1.0.0",
   "description": "Terminal chat client for MeshCore LoRa mesh networks",
   "main": "tui.js",
-  "bin": "tui.js",
   "scripts": {
     "start": "node tui.js",
-    "build": "pkg . --targets node18-win-x64 --output dist/lorachat.exe"
-  },
-  "pkg": {
-    "assets": [
-      "config.js",
-      "ble-connection.js"
-    ]
+    "build": "node scripts/build.js"
   },
   "keywords": [],
   "author": "",
@@ -26,8 +19,5 @@
     "blessed": "^0.1.81",
     "blessed-contrib": "^4.11.0",
     "serialport": "^13.0.0"
-  },
-  "devDependencies": {
-    "pkg": "^5.8.1"
   }
 }
