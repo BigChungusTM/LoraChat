@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Debug and logs
+debug.log
+*.log
+
+# Cache files
+message-cache.json
+
+# Environment and secrets
+.env
+.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code
+.claude/
