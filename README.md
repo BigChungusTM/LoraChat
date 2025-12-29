@@ -2,6 +2,8 @@
 
 A terminal-based chat client for MeshCore LoRa mesh networks. Connect to your MeshCore device via Bluetooth LE and chat with contacts, channels, and monitor your mesh network.
 
+![LoraChat Main Interface](screenshots/main-ui.png)
+
 ## Features
 
 ### Chat
