@@ -204,11 +204,32 @@ const statusLabel = new Text({
 const helpLabel = new Text({
   parent: headerBar,
   top: 1,
-  right: 35,
-  content: '{gray-fg}[1]Chats [2]Send [3]Scan [Q]uit{/}',
+  right: 47,
+  content: '{gray-fg}[1]Chats [2]Send [3]Scan [S]ettings [Q]uit{/}',
   tags: true,
   mouse: false,
   style: { bg: 'blue' },
+});
+
+// Settings Button
+const settingsButton = new Button({
+  parent: headerBar,
+  top: 0,
+  right: 24,
+  width: 12,
+  height: 3,
+  content: ' Settings ',
+  align: 'center',
+  valign: 'middle',
+  tags: true,
+  mouse: true,
+  keys: false,
+  style: {
+    bg: 'cyan',
+    fg: 'black',
+    hover: { bg: 'magenta' },
+    focus: { bg: 'magenta' },
+  },
 });
 
 // Scan Button
@@ -405,35 +426,239 @@ sidebar.on('select', (item, index) => {
   }
 });
 
-// Right-click handler for sidebar (context menu)
-sidebar.on('mouse', (data) => {
-  if (data.action === 'mousedown' && data.button === 'right') {
-    // Get the item at the clicked position
-    const y = data.y - sidebar.atop - sidebar.itop - 1;  // Adjust for borders
-    const items = sidebar.items || [];
-    if (y >= 0 && y < items.length) {
-      const item = items[y];
-      if (item) {
-        const text = stripTags(item.content).trim();
-        debugLog(`Right-click on: "${text}" at y=${y}`);
+// ============================================
+// Context Menu
+// ============================================
+let contextMenu = null;
+let contextMenuTarget = null;
 
-        // Check if it's a contact
-        if (text.includes('@')) {
-          const name = text.replace(/[►@]/g, '').trim();
-          const contact = state.contacts.find(c => c.name === name);
-          if (contact) {
-            setStatus(`{cyan-fg}Right-clicked: ${name} | Options: [D]elete, [P]ing, [I]nfo{/}`);
-            // Store for potential action
-            state.rightClickedContact = contact;
+function showContextMenu(x, y, options, target) {
+  hideContextMenu();
+
+  contextMenuTarget = target;
+  const menuWidth = 20;
+  const menuHeight = options.length + 2;
+
+  // Adjust position to stay on screen
+  const menuX = Math.min(x, screen.width - menuWidth - 2);
+  const menuY = Math.min(y, screen.height - menuHeight - 2);
+
+  contextMenu = new Box({
+    parent: screen,
+    top: menuY,
+    left: menuX,
+    width: menuWidth,
+    height: menuHeight,
+    border: { type: 'line' },
+    style: {
+      border: { fg: 'cyan' },
+      bg: 'black',
+    },
+    tags: true,
+    mouse: true,
+    keys: true,
+  });
+
+  options.forEach((opt, i) => {
+    const btn = new Box({
+      parent: contextMenu,
+      top: i,
+      left: 0,
+      right: 0,
+      height: 1,
+      content: ` ${opt.label}`,
+      tags: true,
+      mouse: true,
+      style: {
+        fg: 'white',
+        hover: { bg: 'blue' },
+      },
+    });
+
+    btn.on('click', () => {
+      hideContextMenu();
+      opt.action();
+    });
+  });
+
+  contextMenu.key(['escape', 'q'], hideContextMenu);
+  contextMenu.focus();
+  screen.render();
+}
+
+function hideContextMenu() {
+  if (contextMenu) {
+    contextMenu.destroy();
+    contextMenu = null;
+    contextMenuTarget = null;
+    screen.render();
+  }
+}
+
+// Click anywhere else to close context menu
+screen.on('mouse', (data) => {
+  if (contextMenu && data.action === 'mousedown') {
+    // Check if click is outside the context menu
+    const mx = contextMenu.left;
+    const my = contextMenu.top;
+    const mw = contextMenu.width;
+    const mh = contextMenu.height;
+    if (data.x < mx || data.x >= mx + mw || data.y < my || data.y >= my + mh) {
+      hideContextMenu();
+    }
+  }
+});
+
+// Right-click handler for sidebar (context menu) - use screen level to catch before sidebar
+screen.on('mouse', (data) => {
+  if (data.action === 'mousedown' && data.button === 'right') {
+    // Check if click is within sidebar bounds
+    const sidebarLeft = sidebar.aleft || 0;
+    const sidebarTop = sidebar.atop || 0;
+    const sidebarWidth = sidebar.width || 30;
+    const sidebarHeight = sidebar.height || 20;
+
+    if (data.x >= sidebarLeft && data.x < sidebarLeft + sidebarWidth &&
+        data.y >= sidebarTop && data.y < sidebarTop + sidebarHeight) {
+
+      debugLog(`Right-click in sidebar: x=${data.x}, y=${data.y}`);
+
+      // Get the item at the clicked position
+      const itemY = data.y - sidebarTop - (sidebar.border ? 1 : 0);
+      const items = sidebar.items || [];
+      debugLog(`Right-click calc: itemY=${itemY}, items.length=${items.length}`);
+
+      if (itemY >= 0 && itemY < items.length) {
+        const item = items[itemY];
+        if (item) {
+          const text = stripTags(item.content).trim();
+          debugLog(`Right-click on: "${text}" at index=${itemY}`);
+
+          // Check if it's a contact (has @)
+          if (text.includes('@')) {
+            const name = text.replace(/[►@()\d]/g, '').trim();
+            const contact = state.contacts.find(c => c.name === name);
+            if (contact) {
+              showContextMenu(data.x, data.y, [
+                { label: '{cyan-fg}@{/} ' + name, action: () => {} },
+                { label: '─────────────────', action: () => {} },
+                { label: 'Send Message', action: () => selectChat('direct', null, contact.name) },
+                { label: 'Ping', action: () => pingContact(contact) },
+                { label: 'View Info', action: () => showContactInfo(contact) },
+              ], contact);
+            }
           }
-        } else if (text.includes('◇')) {
-          const name = text.replace(/[◇]/g, '').trim();
-          setStatus(`{cyan-fg}Repeater: ${name} | [P]ing to check status{/}`);
+          // Check if it's a channel (has #)
+          else if (text.includes('#')) {
+            const name = text.replace(/[►#()\d]/g, '').trim();
+            const channel = state.channels.find(c => c.name === name);
+            if (channel) {
+              showContextMenu(data.x, data.y, [
+                { label: '{green-fg}#{/} ' + name, action: () => {} },
+                { label: '─────────────────', action: () => {} },
+                { label: 'Open Channel', action: () => selectChat('channel', channel.idx, channel.name) },
+              ], channel);
+            }
+          }
+          // Check if it's a repeater (has ◇)
+          else if (text.includes('◇')) {
+            const name = text.replace(/[◇]/g, '').trim();
+            const repeater = state.contacts.find(c => c.name === name && c.type === AdvType.Repeater);
+            if (repeater) {
+              showContextMenu(data.x, data.y, [
+                { label: '{yellow-fg}◇{/} ' + name, action: () => {} },
+                { label: '─────────────────', action: () => {} },
+                { label: 'Ping', action: () => pingContact(repeater) },
+                { label: 'View Info', action: () => showContactInfo(repeater) },
+              ], repeater);
+            }
+          }
         }
       }
     }
   }
 });
+
+async function pingContact(contact) {
+  if (!state.connected || !state.connection) {
+    setStatus(`{red-fg}Not connected{/}`);
+    return;
+  }
+
+  setStatus(`{yellow-fg}Pinging ${contact.name}...{/}`);
+  debugLog(`Pinging contact: ${contact.name}, type=${contact.type}, pubKey=${BufferUtils.bytesToHex(contact.publicKey).substring(0,12)}`);
+
+  try {
+    const start = Date.now();
+    let result;
+
+    // Use pingRepeaterZeroHop for repeaters (simpler, works better)
+    if (contact.type === AdvType.Repeater) {
+      debugLog(`Using pingRepeaterZeroHop for repeater`);
+      result = await state.connection.pingRepeaterZeroHop(contact.publicKey, 10000);
+    } else {
+      // For regular contacts, try tracePath
+      debugLog(`Using tracePath for contact`);
+      const path = [contact.publicKey];
+      result = await state.connection.tracePath(path, 5000);
+    }
+
+    const elapsed = Date.now() - start;
+    debugLog(`Ping result: ${JSON.stringify(result)}`);
+
+    // Format the result based on what we got back
+    if (result) {
+      let statusMsg = `{green-fg}Ping ${contact.name}: `;
+
+      if (result.rtt !== undefined) {
+        statusMsg += `${result.rtt}ms`;
+      } else {
+        statusMsg += `${elapsed}ms`;
+      }
+
+      if (result.snr !== undefined) {
+        const snrBars = getSignalBars(result.snr);
+        statusMsg += ` | SNR: ${result.snr}dB ${snrBars}`;
+      }
+
+      if (result.rssi !== undefined) {
+        statusMsg += ` | RSSI: ${result.rssi}dBm`;
+      }
+
+      statusMsg += `{/}`;
+      setStatus(statusMsg);
+    } else {
+      setStatus(`{green-fg}Ping ${contact.name}: ${elapsed}ms | Response received{/}`);
+    }
+  } catch (err) {
+    const errorMsg = typeof err === 'string' ? err : err?.message || 'Unknown error';
+    debugLog(`Ping failed: ${errorMsg}`);
+    if (errorMsg === 'timeout') {
+      setStatus(`{red-fg}Ping ${contact.name}: Timed out (no response){/}`);
+    } else {
+      setStatus(`{red-fg}Ping ${contact.name} failed: ${errorMsg}{/}`);
+    }
+  }
+}
+
+function getSignalBars(snr) {
+  // Convert SNR to signal bars (rough approximation)
+  // SNR typically ranges from -20 (bad) to +10 (excellent)
+  if (snr >= 5) return '▁▃▅▇ Excellent';
+  if (snr >= 0) return '▁▃▅  Good';
+  if (snr >= -5) return '▁▃   Fair';
+  if (snr >= -10) return '▁    Weak';
+  return '▁    Poor';
+}
+
+function showContactInfo(contact) {
+  const info = [
+    `Name: ${contact.name}`,
+    `Type: ${contact.type === AdvType.Chat ? 'Contact' : contact.type === AdvType.Repeater ? 'Repeater' : 'Room'}`,
+    `Public Key: ${BufferUtils.bytesToHex(contact.publicKey).substring(0, 16)}...`,
+  ].join(' | ');
+  setStatus(`{cyan-fg}${info}{/}`);
+}
 
 function selectChat(type, idx, name) {
   state.selectedChat = { type, idx, name };
@@ -1127,6 +1352,389 @@ scanButton.on('press', () => {
 screen.key(['4'], () => {
   showScannerModal();
 });
+
+// ============================================
+// Settings Modal
+// ============================================
+let settingsOverlay = null;
+let settingsModal = null;
+let settingsTabList = null;
+let settingsContent = null;
+let currentSettingsTab = 'ble';
+
+const settingsTabs = [
+  { id: 'ble', label: 'BLE Connection' },
+  { id: 'device', label: 'Device Info' },
+  { id: 'telemetry', label: 'Telemetry' },
+  { id: 'radio', label: 'Radio Settings' },
+];
+
+function createSettingsModal() {
+  // Dark overlay behind modal
+  settingsOverlay = new Box({
+    parent: screen,
+    top: 0,
+    left: 0,
+    width: '100%',
+    height: '100%',
+    style: { bg: 'black', transparent: true },
+  });
+
+  settingsOverlay.on('click', () => {
+    closeSettingsModal();
+  });
+
+  // Modal window
+  settingsModal = new Box({
+    parent: screen,
+    top: 'center',
+    left: 'center',
+    width: '80%',
+    height: '80%',
+    border: { type: 'line' },
+    label: ' {bold}Settings{/} ',
+    tags: true,
+    style: {
+      border: { fg: 'cyan' },
+      bg: 'black',
+    },
+    shadow: true,
+  });
+
+  // Tab list (left sidebar)
+  settingsTabList = new List({
+    parent: settingsModal,
+    top: 0,
+    left: 0,
+    width: 20,
+    bottom: 2,
+    tags: true,
+    keys: true,
+    mouse: true,
+    style: {
+      selected: { bg: 'blue', fg: 'white', bold: true },
+      item: { fg: 'white' },
+    },
+  });
+
+  // Separator
+  const separator = new Box({
+    parent: settingsModal,
+    top: 0,
+    left: 20,
+    width: 1,
+    bottom: 2,
+    content: '│'.repeat(50),
+    style: { fg: 'cyan' },
+  });
+
+  // Content area (right side)
+  settingsContent = new Box({
+    parent: settingsModal,
+    top: 0,
+    left: 22,
+    right: 0,
+    bottom: 2,
+    tags: true,
+    mouse: true,
+    scrollable: true,
+    alwaysScroll: true,
+    scrollbar: { ch: '█', style: { bg: 'cyan' } },
+  });
+
+  // Instructions
+  const instructions = new Text({
+    parent: settingsModal,
+    bottom: 0,
+    left: 1,
+    right: 1,
+    height: 1,
+    tags: true,
+    content: '{white-fg}[↑↓]{/} {gray-fg}Navigate{/}  {white-fg}[Enter]{/} {gray-fg}Select{/}  {white-fg}[Esc]{/} {gray-fg}Close{/}',
+  });
+
+  // Populate tab list
+  settingsTabList.setItems(settingsTabs.map(t => `  ${t.label}`));
+
+  // Tab selection handler
+  settingsTabList.on('select', (item, index) => {
+    currentSettingsTab = settingsTabs[index].id;
+    updateSettingsContent();
+  });
+
+  // Key handlers
+  settingsModal.key(['escape', 'q'], () => {
+    closeSettingsModal();
+  });
+
+  settingsTabList.key(['escape', 'q'], () => {
+    closeSettingsModal();
+  });
+
+  // Scroll wheel support
+  settingsContent.on('wheeldown', () => {
+    settingsContent.scroll(3);
+    screen.render();
+  });
+
+  settingsContent.on('wheelup', () => {
+    settingsContent.scroll(-3);
+    screen.render();
+  });
+}
+
+function showSettingsModal() {
+  if (!settingsModal) {
+    createSettingsModal();
+  }
+  currentSettingsTab = 'ble';
+  settingsTabList.select(0);
+  settingsOverlay.show();
+  settingsModal.show();
+  settingsTabList.focus();
+  updateSettingsContent();
+  screen.render();
+}
+
+function closeSettingsModal() {
+  if (settingsOverlay) {
+    settingsOverlay.hide();
+  }
+  if (settingsModal) {
+    settingsModal.hide();
+  }
+  sidebar.focus();
+  screen.render();
+}
+
+async function updateSettingsContent() {
+  if (!settingsContent) return;
+
+  let content = '';
+
+  switch (currentSettingsTab) {
+    case 'ble':
+      content = await getBleSettingsContent();
+      break;
+    case 'device':
+      content = await getDeviceInfoContent();
+      break;
+    case 'telemetry':
+      content = await getTelemetryContent();
+      break;
+    case 'radio':
+      content = await getRadioSettingsContent();
+      break;
+  }
+
+  settingsContent.setContent(content);
+  screen.render();
+}
+
+async function getBleSettingsContent() {
+  let content = '{bold}{cyan-fg}BLE Connection{/}\n';
+  content += '─'.repeat(40) + '\n\n';
+
+  if (state.connected) {
+    content += '{green-fg}● Connected{/}\n\n';
+    content += `{white-fg}Device:{/} ${state.selfInfo?.name || 'Unknown'}\n`;
+    content += `{white-fg}Connection Type:{/} ${config.connectionType || 'BLE'}\n\n`;
+    content += '{gray-fg}Use [3] Scan to connect to a different device{/}\n';
+  } else {
+    content += '{red-fg}● Disconnected{/}\n\n';
+    content += '{yellow-fg}Press [3] or click Scan to find devices{/}\n\n';
+    content += '{gray-fg}Tip: Make sure your MeshCore device has BLE enabled{/}\n';
+    content += '{gray-fg}and is powered on within range.{/}\n';
+  }
+
+  content += '\n{bold}Connection Settings:{/}\n';
+  content += `  Scan Timeout: ${config.ble?.scanTimeout || 30000}ms\n`;
+  content += `  Poll Interval: ${config.pollInterval || 2000}ms\n`;
+
+  return content;
+}
+
+async function getDeviceInfoContent() {
+  let content = '{bold}{cyan-fg}Device Information{/}\n';
+  content += '─'.repeat(40) + '\n\n';
+
+  if (!state.connected || !state.connection) {
+    content += '{red-fg}Not connected to device{/}\n';
+    content += '{gray-fg}Connect to a device to view information{/}\n';
+    return content;
+  }
+
+  try {
+    // Get self info
+    const selfInfo = state.selfInfo || await state.connection.getSelfInfo();
+
+    content += '{bold}Device Name:{/}\n';
+    content += `  {green-fg}${selfInfo?.name || 'Unknown'}{/}\n\n`;
+
+    content += '{bold}Public Key:{/}\n';
+    if (selfInfo?.publicKey) {
+      const pubKeyHex = BufferUtils.bytesToHex(selfInfo.publicKey);
+      // Split into readable chunks
+      content += `  {yellow-fg}${pubKeyHex.substring(0, 32)}{/}\n`;
+      content += `  {yellow-fg}${pubKeyHex.substring(32)}{/}\n\n`;
+    } else {
+      content += '  {gray-fg}Not available{/}\n\n';
+    }
+
+    // Try to get additional device info using deviceQuery
+    try {
+      const deviceInfo = await state.connection.deviceQuery(1);
+      if (deviceInfo) {
+        content += '{bold}Firmware:{/}\n';
+        content += `  Version: ${deviceInfo.firmwareVer || 'Unknown'}\n`;
+        if (deviceInfo.firmware_build_date) {
+          content += `  Build:   ${deviceInfo.firmware_build_date}\n`;
+        }
+        if (deviceInfo.manufacturerModel) {
+          content += `  Model:   ${deviceInfo.manufacturerModel}\n`;
+        }
+        content += '\n';
+      }
+    } catch (e) {
+      debugLog(`Could not get device info: ${e.message}`);
+    }
+
+    content += '{bold}Statistics:{/}\n';
+    content += `  Contacts: ${state.contacts.length}\n`;
+    content += `  Channels: ${state.channels.length}\n`;
+    content += `  Cached Messages: ${state.messages.length}\n`;
+
+  } catch (err) {
+    content += `{red-fg}Error fetching device info: ${err.message}{/}\n`;
+  }
+
+  return content;
+}
+
+async function getTelemetryContent() {
+  let content = '{bold}{cyan-fg}Telemetry{/}\n';
+  content += '─'.repeat(40) + '\n\n';
+
+  if (!state.connected || !state.connection) {
+    content += '{red-fg}Not connected to device{/}\n';
+    content += '{gray-fg}Connect to a device to view telemetry{/}\n';
+    return content;
+  }
+
+  try {
+    // Try to get battery voltage using correct API method
+    content += '{bold}Battery:{/}\n';
+    try {
+      const batteryResult = await state.connection.getBatteryVoltage();
+      if (batteryResult && batteryResult.batteryMilliVolts) {
+        const voltage = (batteryResult.batteryMilliVolts / 1000).toFixed(2);
+        // Estimate percentage based on typical LiPo voltage range (3.0V - 4.2V)
+        const minV = 3000, maxV = 4200;
+        const percent = Math.max(0, Math.min(100, Math.round(
+          ((batteryResult.batteryMilliVolts - minV) / (maxV - minV)) * 100
+        )));
+
+        content += `  Voltage: {yellow-fg}${voltage}V{/}\n`;
+        content += `  Level:   ${getBatteryBar(percent)} ~${percent}%\n`;
+        content += '  {gray-fg}(estimated from voltage){/}\n';
+      } else {
+        content += '  {gray-fg}Not available{/}\n';
+      }
+    } catch (e) {
+      content += '  {gray-fg}Not available{/}\n';
+      debugLog(`Battery info error: ${e.message}`);
+    }
+
+    content += '\n{bold}GPS Position:{/}\n';
+    // GPS data comes from selfInfo if device advertises location
+    if (state.selfInfo?.lat && state.selfInfo?.lon) {
+      content += `  Latitude:  {green-fg}${state.selfInfo.lat.toFixed(6)}°{/}\n`;
+      content += `  Longitude: {green-fg}${state.selfInfo.lon.toFixed(6)}°{/}\n`;
+    } else {
+      content += '  {gray-fg}No GPS position set on device{/}\n';
+      content += '  {gray-fg}(Set via companion app or device menu){/}\n';
+    }
+
+    content += '\n{bold}Device Statistics:{/}\n';
+    content += `  Contacts:        {white-fg}${state.contacts.length}{/}\n`;
+    content += `  Channels:        {white-fg}${state.channels.length}{/}\n`;
+    content += `  Cached Messages: {white-fg}${state.messages.length}{/}\n`;
+
+  } catch (err) {
+    content += `{red-fg}Error fetching telemetry: ${err.message}{/}\n`;
+  }
+
+  return content;
+}
+
+function getBatteryBar(percent) {
+  const filled = Math.round(percent / 10);
+  let color = 'green';
+  if (percent < 20) color = 'red';
+  else if (percent < 50) color = 'yellow';
+  return `{${color}-fg}${'█'.repeat(filled)}${'░'.repeat(10 - filled)}{/}`;
+}
+
+async function getRadioSettingsContent() {
+  let content = '{bold}{cyan-fg}Radio Settings{/}\n';
+  content += '─'.repeat(40) + '\n\n';
+
+  if (!state.connected || !state.connection) {
+    content += '{red-fg}Not connected to device{/}\n';
+    content += '{gray-fg}Connect to a device to view radio settings{/}\n';
+    return content;
+  }
+
+  // Note: MeshCore API doesn't have a getRadioConfig method
+  // Radio settings can only be SET, not READ via the companion API
+  // Show device info instead and explain the limitation
+
+  content += '{yellow-fg}Radio Configuration{/}\n\n';
+  content += '{gray-fg}The MeshCore companion API does not currently{/}\n';
+  content += '{gray-fg}support reading radio settings from the device.{/}\n\n';
+
+  content += '{white-fg}Radio settings can be configured via:{/}\n';
+  content += '  • MeshCore Companion App\n';
+  content += '  • Device menu (if available)\n';
+  content += '  • MeshCore web flasher\n\n';
+
+  content += '{bold}Common MeshCore LoRa Settings:{/}\n\n';
+
+  content += '{cyan-fg}Frequency Bands:{/}\n';
+  content += '  EU: 869.4-869.65 MHz\n';
+  content += '  US: 902-928 MHz\n';
+  content += '  AU: 915-928 MHz\n\n';
+
+  content += '{cyan-fg}Typical Settings:{/}\n';
+  content += '  Bandwidth:        125-500 kHz\n';
+  content += '  Spreading Factor: SF7-SF12\n';
+  content += '  Coding Rate:      4/5 - 4/8\n';
+  content += '  TX Power:         2-22 dBm\n\n';
+
+  content += '{gray-fg}Higher SF = longer range but slower{/}\n';
+  content += '{gray-fg}Higher BW = faster but shorter range{/}\n';
+
+  return content;
+}
+
+// Settings button handler
+settingsButton.on('press', () => {
+  debugLog('Settings button pressed');
+  showSettingsModal();
+});
+
+// Keyboard shortcut for settings
+screen.key(['s', 'S'], () => {
+  // Don't open settings if we're in input mode
+  if (screen.focused === inputBox) {
+    return;
+  }
+  showSettingsModal();
+});
+
+function showDeviceScanner() {
+  showScannerModal();
+}
 
 // ============================================
 // Message Sending
